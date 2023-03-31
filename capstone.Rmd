@@ -1,0 +1,445 @@
+---
+title: "Capstone"
+output: pdf_document
+date: '2023-01-17'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(caret)
+```
+## Analysis
+To answer the first research question, how RAPM fares as a predictor of regular season wins or as a predictor of player accolades, data needs to be pulled in about how teams and players perform in the regular season. Because the On/Off split data holds team wins, the sum of team wins was pulled from that data, while player accolade data was pulled from basketball-reference.com and manually compiled. 
+
+
+```{r}
+#player wins while on over three year span - not needed
+RAPMoneyear = allRAPM %>% filter(RAPM_Type == 'oneYear') %>% mutate(year = str_sub(season, start= -2)) %>% select(playerId, RAPM, year) %>% rename(RAPM_one = RAPM)
+RAPMthreeyear = allRAPM %>% filter(RAPM_Type == 'threeYear') %>% mutate(year = str_sub(season, start= -2)) %>% select(playerId, RAPM, year) %>% rename(RAPM_three = RAPM)
+RAPMfiveyear = allRAPM %>% filter(RAPM_Type == 'fiveYear')  %>% mutate(year = str_sub(season, start= -2)) %>% select(playerId, RAPM, year)%>% rename(RAPM_five = RAPM) 
+RAPMwins = left_join(RAPMoneyear, RAPMthreeyear, by = c("playerId", "year"))
+RAPMwins = left_join(RAPMwins, RAPMfiveyear, by = c("playerId", "year"))
+RAPMwins = left_join(RAPMwins, distinct(allRAPM %>% select(playerId, playerName)), by = c("playerId"))
+RAPMwins = left_join(RAPMwins, (Accolades %>% mutate(year = str_sub(Season, start= -2)) ) , by = c("playerId" = 'playerID', "year"))
+write.csv(RAPMwins, '/Users/matthewkearney/RAPMwins.csv')
+
+years = c('2021-22', '2020-21', '2019-20')
+playerTeams = distinct(allOnOff %>% filter(COURT_STATUS == 'On') %>% select(VS_PLAYER_ID, VS_PLAYER_NAME, TEAM_ABBREVIATION, Season, W))
+playerSeasons = playerTeams %>% filter(Season %in% years) %>% group_by(VS_PLAYER_ID, VS_PLAYER_NAME)  
+playerSeasons = left_join(playerSeasons, (playerTeams %>% filter(Season %in% years) %>% group_by(VS_PLAYER_ID, VS_PLAYER_NAME) %>% count(VS_PLAYER_NAME) %>% rename(teams = n)) %>% mutate(season = '2019-22') )
+
+threeYearWins = bind_rows(threeYearWins, playerSeasons)
+threeYearWins %>% arrange(-WinsWhenOn)
+
+
+
+
+x = left_join(splits, (allRAPM), by = c('VS_PLAYER_ID' = 'playerId', 'TEAM_ABBREVIATION' = 'teamName', 'Season' = 'season'))
+x = drop_na(x)
+
+teamWins = allOnOff %>% filter(COURT_STATUS == 'Off')  %>% group_by(TEAM_ABBREVIATION, Season) %>% summarise(teamWins = max(W)) %>% arrange(Season, -teamWins)
+x = x %>% group_by(Season, TEAM_ABBREVIATION) %>% summarise(RAPM = mean(RAPM))
+teamWins = left_join(x, teamWins)
+teamWins %>% group_by(Season) %>% count(Season)
+write.csv(teamWins, '/Users/matthewkearney/teamWins.csv')
+write.csv(winShareCombined, '/Users/matthewkearney/teamWins.csv')
+
+allOnOff %>% filter() %>% group_by(Season) %>% count(Season)
+
+allOnOff %>% filter(COURT_STATUS == 'On') %>% summarise(mean(MIN))
+```
+The resulting dataframe contains the one, three, and five year RAPM data for each qualifying NBA player who played over 1000 minutes that season. Below contains a plot to show the simple linear regression for team wins over one year RAPMs, as the values for three and five year RAPMs do not account for the teams the player played on, making it impossible to accurately display the average RAPM for a team.
+
+```{r}
+x = lm(RAPM ~ teamWins, data = teamWins)
+
+plot(teamWins$teamWins, teamWins$RAPM) 
+summary(x)
+```
+
+
+```{r}
+ctrl <- trainControl(method = "cv", number = 10)
+
+#fit a regression model and use k-fold CV to evaluate performance
+model <- train(RAPM_three ~ WS, data = (winShareCombined), method = 'lm', trControl = ctrl)
+
+#view summary of k-fold CV               
+print(model)
+```
+To test how player wins and accolades are measured by RAPM, two variables will be brought in: player accolades, like MVP, and Win Shares, which is an estimate of how many wins a player produced.
+```{r}
+
+x = lm(weighted_rank ~ RAPM_one, data = (RAPMwins%>% filter(weighted_rank>0)))
+
+plot(RAPMwins$RAPM_one, RAPMwins$weighted_rank) 
+abline(x)
+summary(x)
+```
+Obviously, the small sample size of players who received a vote for MVP, DPOY, or a All-NBA team makes it hard to draw conclusions about how RAPM performs as a measure of player performance when it comes to predicting accolades. However, the statistic "Win Shares" is an attempt to credit wins to a specific player. Below shows the correlation of RAPM to a player's win shares, over a one, three, and five year period.
+
+```{r}
+winShareCombined = left_join((winShares %>% mutate(year = str_sub(Season, start= -2)) ), (RAPMwins %>% select(RAPM_one, RAPM_three, RAPM_five, playerId, year)), by = c("VS_PLAYER_ID" = "playerId", 'year' = 'year'))
+x = lm(WS~RAPM_one, data = winShareCombined)
+plot(winShareCombined$RAPM_one, winShareCombined$WS)
+abline(x)
+summary(x)
+```
+
+```{r}
+OnOff_2020 = read.csv('/Users/matthewkearney/2020_On_Off.csv')
+
+OnOff_2022 %>% filter(VS_PLAYER_NAME == 'Chalmers, Mario')
+OnOff_2022 = OnOff_2022 %>% rename(Season = SEASON)
+RAPM_three_year[, 'RAPM_Type'] = 'threeYear'
+allRAPM = bind_rows(allRAPM, RAPM_five_year)
+
+allRAPM = read.csv('/Users/matthewkearney/allRAPM.csv')
+x = OnOff_2023 %>% select(VS_PLAYER_ID, VS_PLAYER_NAME)
+allOnOff = bind_rows(OnOff_2016, OnOff_2017, OnOff_2018, OnOff_2019, OnOff_2020, OnOff_2021, OnOff_2022)
+
+allRAPM %>% filter(playerId == 203507)
+
+temp3 = temp  %>% group_by(VS_PLAYER_ID, Season) %>% summarise(across(c(ON_NET, OFF_NET, ON_MIN), mean)) %>% mutate(NetDiff = ON_NET - OFF_NET) %>% select(VS_PLAYER_ID, Season, NetDiff, ON_MIN)
+
+allOnOff %>% group_by(VS_PLAYER_ID, Season) %>% arrange(VS_PLAYER_ID)
+
+splitOn = allOnOff %>% filter(COURT_STATUS == 'On') %>% select(VS_PLAYER_ID, VS_PLAYER_NAME, MIN, NET_RATING)%>% rename(ON_MIN = MIN, ON_NET = NET_RATING)
+
+splitOff = allOnOff %>% filter(COURT_STATUS == 'Off') %>% select(VS_PLAYER_ID, MIN, NET_RATING) %>% rename(OFF_MIN = MIN, OFF_NET = NET_RATING)
+
+temp = left_join((allOnOff %>% filter(COURT_STATUS == 'On') %>% select(VS_PLAYER_ID, VS_PLAYER_NAME, MIN, NET_RATING, Season)%>% rename(ON_MIN = MIN, ON_NET = NET_RATING)
+), (allOnOff %>% filter(COURT_STATUS == 'Off') %>% select(VS_PLAYER_ID, MIN, NET_RATING, Season) %>% rename(OFF_MIN = MIN, OFF_NET = NET_RATING)
+), by = c('VS_PLAYER_ID' = 'VS_PLAYER_ID' , 'Season' = 'Season'))
+temp2 = left_join(allOnOff, temp3, by = c('VS_PLAYER_ID' = 'VS_PLAYER_ID' , 'Season' = 'Season'))
+
+allOnOff %>% select()
+temp3 %>% filter(VS_PLAYER_ID == 1628513)
+allOnOff %>% filter(VS_PLAYER_ID == 1628513 )
+
+allOnOff = temp2
+
+tradedPlayers = allOnOff %>% count(Season, VS_PLAYER_ID) %>% filter(n>2) # %>% select(VS_PLAYER_ID)
+
+tradedON = left_join(tradedPlayers, (allOnOff %>% select(VS_PLAYER_ID, VS_PLAYER_NAME, MIN, Season, TEAM_NAME, COURT_STATUS, GP))) %>% filter(COURT_STATUS == 'On') %>% rename(GP_ON = GP)
+
+tradedOFF = left_join(tradedPlayers, (allOnOff %>% select(VS_PLAYER_ID, VS_PLAYER_NAME, MIN, Season, TEAM_NAME, COURT_STATUS, GP))) %>% filter(COURT_STATUS == 'Off')%>% rename(GP_OFF = GP) %>% select(VS_PLAYER_ID, TEAM_NAME, Season, GP_OFF)
+
+allOnOff %>% filter(VS_PLAYER_ID == 204025) %>% select(-X.1, -X)
+
+x = left_join(tradedON, tradedOFF, by = c('VS_PLAYER_ID', 'TEAM_NAME', 'Season')) %>% mutate(percent_played = GP_ON/GP_OFF) 
+x = x %>% filter(percent_played > 0.7) %>% filter(GP_ON > 20)
+
+
+x = x %>% select(Season, VS_PLAYER_ID, TEAM_NAME, VS_PLAYER_NAME)
+
+traded_Players_remove = right_join(x, y, by = c('VS_PLAYER_ID', 'TEAM_NAME', 'Season')) %>% filter(is.na(VS_PLAYER_NAME.x)) %>% select(Season, VS_PLAYER_ID, TEAM_NAME, VS_PLAYER_NAME.y)
+
+#cleaned to remove traded players that wouldn't have had an impact(< 70% games played, < 20 games played)
+allOnOff = left_join(allOnOff, traded_Players_remove, by = c('VS_PLAYER_ID', 'TEAM_NAME', 'Season')) %>% filter(is.na(VS_PLAYER_NAME.y))
+
+Accolades = read.csv('/Users/matthewkearney/capstoneAccsCSV.csv') %>% replace(is.na(.), 0) %>% mutate(weighted_rank = ((mvpPercentage^0.65)*0.35 + (allNBApercentage^0.65)*0.45 + (dpoyPercentage^0.4)*0.2)) %>% replace(is.na(.), 0)
+
+left_join(allOnOff, Accolades, by = c('VS_PLAYER_ID' = 'playerID', 'Season'))  %>% replace(is.na(.), 0) %>% select(!player)
+
+
+allOnOff = allOnOff %>% select(!NetDiff)
+
+splitOn = allOnOff %>% filter(COURT_STATUS == 'On') %>% rename(ON_MIN = MIN, ON_NET = NET_RATING)
+
+
+splitOff = allOnOff %>% filter(COURT_STATUS == 'Off') %>% select(VS_PLAYER_ID, MIN, NET_RATING) %>% rename(OFF_MIN = MIN, OFF_NET = NET_RATING)
+
+splitOn = OnOfftrim %>% rename_with( ~ paste0("ON_", .), .cols = columns) %>% filter(COURT_STATUS == 'On') %>% select(-COURT_STATUS)
+splitOff = OnOfftrim  %>% rename_with( ~ paste0("OFF_", .), .cols = columns) %>% filter(COURT_STATUS == 'Off')%>% select(-COURT_STATUS)
+
+splits = left_join(splitOn, splitOff)
+
+columns = colnames(allOnOff %>% select(7:31))
+OnOfftrim = allOnOff %>% filter(ON_MIN > 1000) %>% select(!ON_MIN)
+increment = 1
+for (x in 6:30){
+  name = (paste(names[[increment]], "_Diff", sep = ''))
+  name1  = colnames(splits[x])
+  name2  = colnames(splits[x+26])
+y[name] = y[[name1]] - y[[name2]]
+  
+increment = increment + 1  
+
+}
+
+y =splits
+names = c('GP', 'W', 'L', 'W_PCT', 'MIN', 'E_OFF_RATING', 'OFF_RATING', 'E_DEF_RATING', 'DEF_RATING', 'E_NET_RATING', 'NET_RATING', 'AST_PCT', 'AST_TO', 'AST_RATIO', 'OREB_PCT', 'DREB_PCT', 'REB_PCT', 'TM_TOV_PCT', 'EFG_PCT', 'TS_PCT', 'E_PACE', 'PACE', 'PACE_PER_40', 'POSS', 'PIE')
+
+
+splits = y %>% rename(OFFENSIVE_RATING_Diff = OFF_RATING_Diff) %>% rename(E_OFFENSIVE_RATING_Diff = E_OFF_RATING_Diff) %>% select(!contains('ON_')) %>% select(!contains('OFF_'))
+
+```
+
+
+```{r}
+y = read.csv('/Users/matthewkearney/winShares2022.csv')
+y[, 'Season'] = '2015-16'
+y = y %>% filter(!is.na(Rk)) %>% filter(Tm != 'TOT')
+y$Tm[y$Tm == 'PHO'] <- 'PHX'
+y$Tm[y$Tm == 'CHO'] <- 'CHA'
+y$Tm[y$Tm == 'BRK'] <- 'BKN'
+y$Lname = gsub('č', 'c', y$Lname)
+y$Lname = gsub('ć', 'c', y$Lname)
+y$Lname = gsub('š', 's', y$Lname)
+y$Lname = gsub('á', 'a', y$Lname)
+y$Lname = gsub('ý', 'y', y$Lname)
+y$Lname = gsub('ģ', 'g', y$Lname)
+y$Lname = gsub('ņ', 'n', y$Lname)
+y$Lname = gsub('ö', 'o', y$Lname)
+y$Lname = gsub('ū', 'u', y$Lname)
+y$Lname = gsub('ā', 'a', y$Lname)
+y$Lname = gsub('Š', 'S', y$Lname)
+y$Lname = gsub('Ž', 'Z', y$Lname)
+y$Lname = gsub('ž', 'z', y$Lname)
+y$Lname = gsub('İ', 'I', y$Lname)
+y$Lname = gsub('ó', 'o', y$Lname)
+y$Lname = gsub('Á', 'A', y$Lname)
+y$Lname = gsub('è', 'e', y$Lname)
+y$Lname = gsub('í', 'i', y$Lname)
+y$Lname = gsub('Á', 'A', y$Lname)
+
+
+x = splits %>% filter(Season == '2015-16')
+lname = gsub(",.*$", "", x$VS_PLAYER_NAME)
+fname = str_remove({x$VS_PLAYER_NAME}, ".*,")
+fname = gsub(" ", "", fname)
+fname = substring(fname, 1, 2)
+name = paste0(lname, ", ", fname)
+splitNames = bind_cols((x %>% select(VS_PLAYER_ID, VS_PLAYER_NAME, TEAM_ABBREVIATION)), name) %>% rename(Lname = ...4)
+x = left_join(splitNames, y, by = c('Lname',  'TEAM_ABBREVIATION' = 'Tm')) 
+x[rowSums(is.na(x)) > 0,]
+
+x %>% count(TEAM_ABBREVIATION, Lname) %>% filter(n>1)
+
+winShares2016 = x
+
+winShares = bind_rows(winShares, winShares2022)
+
+
+```
+
+```{r}
+library(randomForest)
+
+workingDF =  left_join(splits, (winShares %>% select(VS_PLAYER_ID, TEAM_ABBREVIATION, Season, WS)), by = c('VS_PLAYER_ID', 'Season', "TEAM_ABBREVIATION")) 
+
+workingDF = workingDF %>%select(contains('_Diff'), WS) %>% select(-MIN_Diff) 
+
+mtry <- tuneRF((workingDF %>% select(-WS)), workingDF$WS, ntreeTry=500,
+               stepFactor=1.25,improve=0.01, trace=TRUE, plot=TRUE)
+best.m <- mtry[mtry[, 2] == min(mtry[, 2]), 1]
+print(mtry)
+print(best.m)
+
+rf.fit = randomForest(formula = WS ~ ., data = workingDF, ntree = 500, mtry = 12, keep.forest = FALSE, importance = TRUE)
+rf.fit2 = randomForest(formula = WS ~ ., data = workingDF, ntree = 1000, mtry = 12, keep.forest = FALSE, importance = TRUE)
+
+```
+
+```{r}
+### Visualize variable importance ----------------------------------------------
+library(ggplot2)
+# Get variable importance from the model fit
+ImpData <- as.data.frame(importance(rf.fit))
+ImpData$Var.Names <- row.names(ImpData)
+
+ggplot(ImpData, aes(x=Var.Names, y=`%IncMSE`)) +
+  geom_segment( aes(x=Var.Names, xend=Var.Names, y=0, yend=`%IncMSE`), color="skyblue") +
+  geom_point(aes(size = IncNodePurity), color="blue", alpha=0.6) +
+  theme_light() +
+  coord_flip() +
+  theme(
+    legend.position="bottom",
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+varImpPlot(rf.fit)
+
+
+rfcv((workingDF %>% select(-WS)), workingDF$WS, cv.fold = 10)$error.cv
+```
+
+```{r}
+
+workingDF =  left_join(splits, (winShares %>% select(VS_PLAYER_ID, TEAM_ABBREVIATION, Season, WS)), by = c('VS_PLAYER_ID', 'Season', "TEAM_ABBREVIATION")) 
+workingDF = left_join((workingDF %>% mutate(year = str_sub(Season, start= -2))), (RAPMwins %>% select(playerId, year, RAPM_one)), by = c('VS_PLAYER_ID' = 'playerId', 'year'))
+
+workingDF = workingDF %>%select(contains('_Diff'), WS, RAPM_one) %>% select(-MIN_Diff) 
+
+mtry <- tuneRF((workingDF %>% select(-WS)), workingDF$WS, ntreeTry=500,
+               stepFactor=1.5,improve=0.01, trace=TRUE, plot=TRUE)
+best.m <- mtry[mtry[, 2] == min(mtry[, 2]), 1]
+print(mtry)
+print(best.m)
+
+rf.fit = randomForest(formula = WS ~ ., data = workingDF, ntree = 500, mtry = 12, keep.forest = FALSE, importance = TRUE)
+
+### Visualize variable importance ----------------------------------------------
+library(ggplot2)
+# Get variable importance from the model fit
+ImpData <- as.data.frame(importance(rf.fit))
+ImpData$Var.Names <- row.names(ImpData)
+
+ggplot(ImpData, aes(x=Var.Names, y=`%IncMSE`)) +
+  geom_segment( aes(x=Var.Names, xend=Var.Names, y=0, yend=`%IncMSE`), color="skyblue") +
+  geom_point(aes(size = IncNodePurity), color="blue", alpha=0.6) +
+  theme_light() +
+  coord_flip() +
+  theme(
+    legend.position="bottom",
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+varImpPlot(rf.fit)
+
+```
+
+
+```{r}
+workingDF =  left_join(splits, (winShares %>% select(VS_PLAYER_ID, TEAM_ABBREVIATION, Season, WS)), by = c('VS_PLAYER_ID', 'Season', "TEAM_ABBREVIATION")) 
+workingDF = workingDF %>%select(contains('_Diff'), WS) %>% select(-MIN_Diff) 
+
+library(leaps)
+regfit10 = regsubsets(WS~.,data=workingDF,nbest=1,nvmax=19,method="forward")
+full.summary = summary(regfit10) 
+coef(regfit10,5)
+```
+
+```{r}
+set.seed(1)
+train = sample(c(TRUE,FALSE),size=nrow(workingDF),rep=TRUE)
+test = (!train)
+
+regfit.full = regsubsets(WS~.,data=workingDF[train,],nvmax=19,method="forward")
+test.mat = model.matrix(WS~.,data=workingDF[test,])
+
+val.errors = rep(NA,19)
+for(i in 1:19){
+   coefi = coef(regfit.full,id=i)
+   pred = test.mat[,names(coefi)]%*%coefi
+   val.errors[i] = mean((workingDF$WS[test]-pred)^2)
+}
+
+plot(x=1:19,y=val.errors,xlab="# features",ylab="avg RMSE",type='b',col="blue")
+full.summary$rsq[12]
+```
+
+```{r}
+workingDF =  left_join(splits, (winShares %>% select(VS_PLAYER_ID, TEAM_ABBREVIATION, Season, WS)), by = c('VS_PLAYER_ID', 'Season', "TEAM_ABBREVIATION")) 
+workingDF = left_join((workingDF %>% mutate(year = str_sub(Season, start= -2))), (RAPMwins %>% select(playerId, year, RAPM_one)), by = c('VS_PLAYER_ID' = 'playerId', 'year'))
+workingDF = workingDF %>%select(contains('_Diff'), WS, RAPM_one) %>% select(-MIN_Diff) 
+
+set.seed(1)
+train = sample(c(TRUE,FALSE),size=nrow(workingDF),rep=TRUE)
+test = (!train)
+
+regfit.full = regsubsets(WS~.,data=workingDF[train,],nvmax=20,method="forward")
+test.mat = model.matrix(WS~.,data=workingDF[test,])
+
+val.errors = rep(NA,20)
+for(i in 1:20){
+   coefi = coef(regfit.full,id=i)
+   pred = test.mat[,names(coefi)]%*%coefi
+   val.errors[i] = mean((workingDF$WS[test]-pred)^2)
+}
+
+plot(x=1:20,y=val.errors,xlab="# features",ylab="avg RMSE",type='b',col="blue")
+
+
+regfit12 = regsubsets(WS~.,data=workingDF,nbest=1,nvmax=12,method="forward")
+full.summary = summary(regfit12) 
+coef(regfit12,5)
+full.summary$rsq[10]
+
+```
+
+
+```{r}
+x = left_join(workingDF, (allRAPM %>% filter(RAPM_Type == 'oneYear')), by = c('VS_PLAYER_ID' = 'playerId', 'TEAM_ABBREVIATION' = 'teamName', 'Season' = 'season'))
+x = drop_na(x)
+
+x = x %>% mutate(combinedRAPM = .6*(RAPM) + .4*(OFFENSIVE_RATING_Diff/5)) 
+
+teamWins = allOnOff %>% filter(COURT_STATUS == 'Off') %>% filter(GP == 82) %>% group_by(TEAM_ABBREVIATION, Season) %>% summarise(teamWins = mean(W))
+
+x = x %>% group_by(Season, TEAM_ABBREVIATION) %>% summarise(combinedRAPM = mean(combinedRAPM))
+
+x = left_join(x, teamWins)
+
+summary(lm(WS ~ combinedRAPM, data = x))
+```
+
+
+```{r}
+workingDF = splits %>%select(contains('_Diff')) %>% select(-MIN_Diff) %>% select(-GP_Diff) %>% select(-W_Diff) %>% select(-L_Diff) %>% select(-W_PCT_Diff)
+df = workingDF 
+df = df %>% scale
+set.seed(1234) 
+limit_k = 20 
+sse = c() 
+
+for (k in 1:limit_k) {
+  algo_k = kmeans(df, centers=k, nstart=22, iter.max=20) 
+  sse = c(sse, algo_k$tot.withinss) 
+} 
+
+tibble(k = 1:limit_k, SSE = sse - lead(sse)) %>%
+  ggplot(aes(x=k, y=SSE)) + geom_point() + geom_line() +
+  labs(x = "K", y = "SSE", title = "SSE for Varying Cluster Sizes")  + 
+  scale_x_continuous(breaks=seq(1, limit_k, 1))
+```
+
+```{r}
+set.seed(1234)
+
+K = 9
+kmeans = kmeans(df, centers=K, nstart=22, iter.max=20)
+centers = as.data.frame(kmeans$centers) 
+
+centers$Cluster = c('Cluster 1', 'Cluster 2', 'Cluster 3',
+                       'Cluster 4', 'Cluster 5', 'Cluster 6',
+                       'Cluster 7', 'Cluster 8', 'Cluster 9') 
+centers = centers %>% 
+  pivot_longer(!Cluster, names_to = 'feature', values_to = 'z_val') 
+
+centers$feature = factor(centers$feature, levels= colnames(df)) 
+
+centers$Cluster = factor(centers$Cluster, levels=c('Cluster 1', 'Cluster 2', 'Cluster 3', 'Cluster 4',
+                                                          'Cluster 5', 'Cluster 6', 'Cluster 7', 'Cluster 8',
+                                                          'Cluster 9'))
+```
+
+```{r}
+centers %>% 
+  ggplot(aes(x=feature, y=z_val, color=Cluster)) + 
+  geom_point() + 
+  scale_color_brewer(palette="Paired") + 
+  gghighlight(use_direct_label = FALSE) +
+  facet_wrap(~ Cluster, ncol=3) + 
+  labs(x = "Feature", 
+       title = "All Clusters") + 
+  theme(legend.position = "none", strip.text = element_text(face='bold'),
+        axis.text.x = element_text(angle=90, size=8), 
+        panel.grid.minor = element_blank())
+```
+```{r}
+clusters = tibble(cluster=kmeans$cluster, id=splits$VS_PLAYER_ID, name=splits$VS_PLAYER_NAME, season=splits$Season) 
+#%>% dplyr::filter( season == '2021-22')  %>% arrange(cluster) 
+
+left_join(clusters, allRAPM, by  = c('id' = 'playerId', 'season')) %>% group_by(cluster) %>% summarise(mean(RAPM))
+
+left_join(clusters, Accolades, by  = c('id' = 'playerID', 'season' = 'Season')) %>% select(-player) %>% replace(is.na(.), 0) %>% group_by(cluster) %>% summarise(sum(weighted_rank))
+
+```
+
